@@ -20,6 +20,7 @@ typedef struct PageTableEntry{
     int frame_number;
     int valid;
     char page[9];
+    int lastused;
     struct PageTableEntry *prox;
 }PageTableEntry;
 
@@ -27,6 +28,7 @@ typedef struct TLB{
     char pagenum[9];
     char frame;
     int frame_number;
+    PageTableEntry *pagetable;
     struct TLB *prox;
 }TLB;
 
@@ -37,29 +39,36 @@ void setVirtualAddress(Node *head, int Virtual_Address, int indice);
 void incluir(Node **head, char bin[16]);
 int binarioParaInteiro(char *binario);
 int readBackStore(Node *head);
+int qtdendereco(FILE *dados) ;
 
 //Pagetable
 void pageTableinit(PageTableEntry **head, PageTableEntry **tail);
-PageTableEntry *pageTable(Node *head, PageTableEntry *pthead,PageTableEntry *pttail, int *indice);
-PageTableEntry *pageTroca(Node *head, PageTableEntry *page_table, int indice, int *pagetable);
-void print(PageTableEntry *head);
+PageTableEntry *pageTable(Node *head, PageTableEntry *pthead,PageTableEntry *pttail,int *pagetable, int *indice, int validacao, int tempo);
+PageTableEntry *pageTroca(Node *head, PageTableEntry *page_table, int indice, int validacao, int tempo);
+void pageAtt(TLB *head, PageTableEntry *phead, int tempo);
 
 //TLB
 void TLBinit(TLB **head, TLB **tail);
-TLB * TLBexec(Node *head, TLB *tlhead, TLB *tltail, int *indice, int *tlb);
+TLB * TLBexec(Node *head, TLB *tlhead, TLB *tltail,PageTableEntry *phead, int *indice, int *tlb, int tempo);
 TLB *TLBtroca(Node *head, TLB *tlhead, int indice);
-void printTLB(TLB *head);
 
 int i = 0; int j = 0; int k = 0;
 int tlb, pagetable;
+int fifo_ou_lru;
 int *numtlb = &tlb; int *numpagetable = &pagetable;
 int *x = &j; int *y = &k;
 
 int main(int argc, char *argv[]){
     FILE *fptr = fopen(argv[1], "r");
     FILE *fcor = fopen("correctmeu.txt", "w");
+    int linhas = qtdendereco(fptr);
+    fseek(fptr, 0, 0);
 
-    int virtual_address, teste2;
+    if(strcmp(argv[2], "fifo") == 0){
+        fifo_ou_lru = 1;
+    }
+
+    int virtual_address;
     PageTableEntry *pthead = NULL;
     PageTableEntry *pttail = NULL;
     PageTableEntry *ptemp = NULL;
@@ -72,7 +81,7 @@ int main(int argc, char *argv[]){
 
     Node *head = NULL;
     char enderecobin[16];
-    while(!(feof(fptr))){
+    while(i <= linhas){
         if(j == NUM_PAGES){
             j = 0;
         }
@@ -89,8 +98,8 @@ int main(int argc, char *argv[]){
         int offset = binarioParaInteiro(head->offset);
         int page = binarioParaInteiro(head->page);
         int instruct = readBackStore(head);
-        ptemp = pageTable(head, pthead, pttail, x);
-        ttemp = TLBexec(head, tlhead, tltail, y, numtlb);
+        ttemp = TLBexec(head, tlhead, tltail, pthead, y, numtlb, i);
+        ptemp = pageTable(head, pthead, pttail,numpagetable, x, fifo_ou_lru, i);
         fprintf(fcor, "Virtual address: %d TLB: %d Physical address: %d Value: %d\n", head->virtual_address, ttemp->frame,(offset + (256 * ptemp->frame_number)), instruct);
         j++;
         k++;
@@ -105,16 +114,11 @@ int main(int argc, char *argv[]){
     fprintf(fcor, "TLB Hits = %d\n", *numtlb);
     float tlbrate = *numtlb/(float)i;
     fprintf(fcor, "TLB Hit Rate = %.3f\n", tlbrate);
-    //for (int j = 0; j < 128; ++j) {
-
-    //}
-    //readBackStore(head);
-    //print(pthead, pttail);
     return 0;
 }
 
 char* toBinary(int numero) {
-    char* bin = (char*)malloc(17 * sizeof(char)); // 16 bits + 1 para o caractere nulo
+    char* bin = (char*)malloc(17 * sizeof(char));
     int tamanho_binario = 0;
     int temp = numero;
 
@@ -187,27 +191,17 @@ void incluir(Node **head, char bin[17]){
     }
 }
 
-void print(PageTableEntry *head){
-    FILE *pt = fopen("pagetable.txt", "a");
-    while(head!=NULL){
-        fprintf(pt, "Numpage: %d|Page: %s\n", head->frame_number , head->page);
-        head = head->prox;
-    }fclose(pt);
-}
-
 int binarioParaInteiro(char *binario) {
     int tamanho = strlen(binario);
     int inteiro = 0;
     int potencia = 1;
 
-    // Começando da direita para a esquerda
     for (int i = tamanho - 1; i >= 0; i--) {
-        // Verificando se o caractere é '1' (dígito 1)
+
         if (binario[i] == '1') {
-            // Adicionando a potência de 2 correspondente
+
             inteiro += potencia;
         }
-        // Dobrando a potência para o próximo dígito binário
         potencia *= 2;
     }
 
@@ -221,7 +215,6 @@ int readBackStore(Node *head){
     int page = binarioParaInteiro(head->page);
     fseek(fbin, (page * 256) + offset, SEEK_SET);
     fread(&value, sizeof(value), 1, fbin);
-    //printf("Page: %d, Offset %d\n", page, offset);
     fclose(fbin);
     return value;
 }
@@ -233,6 +226,7 @@ void pageTableinit(PageTableEntry **head, PageTableEntry **tail) {
         if (novo != NULL) {
             novo->valid = 0;
             novo->frame_number = i;
+            novo->lastused = -129;
             strcpy(novo->page, "x");
             novo->prox = NULL;
             if (*head == NULL) {
@@ -246,35 +240,64 @@ void pageTableinit(PageTableEntry **head, PageTableEntry **tail) {
         }
     }
 }
-PageTableEntry *pageTable(Node *head, PageTableEntry *pthead, PageTableEntry *pttail, int *indice) {
+PageTableEntry *pageTable(Node *head, PageTableEntry *pthead, PageTableEntry *pttail,int *pagetable, int *indice, int validacao, int tempo) {
     PageTableEntry *ptemp = pthead;
     while(ptemp != NULL){
         if(strcmp(ptemp->page, head->page) != 0){
-            //printf("PTP: %s, HP: %s - NAO ENCONTRADA\n", ptemp->page, head->page);
             ptemp = ptemp->prox;
-            //printf("Indice: %d\n", *indice);
         }else{
-            //printf("PTP: %s, HP: %s - ENCONTRADA\n", ptemp->page, head->page);
             (*indice)--;
+            ptemp->lastused = tempo;
             return ptemp;
-            ptemp = ptemp->prox;
-            //printf("Indice: %d A\n", *indice);
         }
     }
-    pageTroca(head, pthead, *indice, numpagetable);
+    (*pagetable)++;
+    pageTroca(head, pthead, *indice, validacao, tempo);
 }
 
-PageTableEntry *pageTroca(Node *head, PageTableEntry *page_table, int indice, int *pagetable){
-    int i = 0;
-    (*pagetable)++;
-    print(page_table);
-    while(i < indice && page_table != NULL){
-        page_table = page_table->prox;
-        i++;
+PageTableEntry *pageTroca(Node *head, PageTableEntry *page_table, int indice, int validacao, int tempo) {
+int i = 0;
+    if (validacao != 1) {
+        indice = i;
+        PageTableEntry *temp = page_table;
+        PageTableEntry *menorEntry = page_table;
+        int menorTempo = temp->lastused;
+
+        while (temp != NULL) {
+            if (temp->lastused < menorEntry->lastused) {
+                menorTempo = temp->lastused;
+                menorEntry = temp;
+                indice = i;
+            }
+            i++;
+            temp = temp->prox;
+        }
+
+        if(indice != 0 && indice < 128){
+        for (int l = 0; l < indice; ++l) {
+            page_table = page_table->prox;
+        }
+        }
+
+        strcpy(page_table->page, head->page);
+        (*page_table).lastused = tempo;
+        return page_table;
+
+    }else if (validacao == 1) {
+        int i = 0;
+        PageTableEntry *temp = page_table;
+        while (i < indice && temp != NULL) {
+            temp = temp->prox;
+            i++;
+        }
+
+        strcpy(temp->page, head->page);
+        return temp;
     }
-    strcpy(page_table->page, head->page);
-    return page_table;
+
+    return NULL;
 }
+
 
 void TLBinit(TLB **head, TLB **tail){
     int i = 0;
@@ -296,26 +319,22 @@ void TLBinit(TLB **head, TLB **tail){
     }
 }
 
-TLB * TLBexec(Node *head, TLB *tlhead, TLB *tltail, int *indice, int *tlb){
+TLB * TLBexec(Node *head, TLB *tlhead, TLB *tltail,PageTableEntry *phead, int *indice, int *tlb, int tempo){
     TLB *ttemp = tlhead;
     while(ttemp != NULL){
         if(strcmp(ttemp->pagenum, head->page) != 0){
-            //printf("PTP: %s, HP: %s - NAO ENCONTRADA\n", ptemp->page, head->page);
             ttemp = ttemp->prox;
-            //printf("Indice: %d\n", indice);
         }else{
-            //printf("PTP: %s, HP: %s - ENCONTRADA\n", ptemp->page, head->page);
             (*indice)--;
             (*tlb)++;
+            pageAtt(ttemp, phead, tempo);
             return ttemp;
-            //printf("Indice: %d A\n", indice);
         }
     }TLBtroca(head, tlhead, *indice);
 }
 
 TLB *TLBtroca(Node *head, TLB *tlhead, int indice){
     int i = 0;
-    printTLB(tlhead);
     while(i < indice && tlhead != NULL){
         tlhead = tlhead->prox;
         i++;
@@ -323,10 +342,27 @@ TLB *TLBtroca(Node *head, TLB *tlhead, int indice){
     return tlhead;
 }
 
-void printTLB(TLB *head){
-    FILE *pt = fopen("TLB.txt", "a");
-    while(head!=NULL){
-        fprintf(pt, "Frame: %d|Page: %s\n", head->frame , head->pagenum);
-        head = head->prox;
-    }fclose(pt);
+int qtdendereco(FILE *dados) {
+    int linhas = 0;
+    char ch;
+
+    while ((ch = fgetc(dados)) != EOF) {
+        if (ch == '\n') {
+            linhas++;
+        }
+    }
+    linhas--;
+    return linhas;
+}
+
+void pageAtt(TLB *head, PageTableEntry *phead, int tempo){
+    int ptp, tlbp;
+   tlbp = binarioParaInteiro(head->pagenum);
+    while(phead != NULL){
+        ptp = binarioParaInteiro(phead->page);
+        if(ptp == tlbp){
+            (*phead).lastused = tempo;
+        }
+        phead = phead->prox;
+    }
 }
