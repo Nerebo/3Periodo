@@ -1,5 +1,5 @@
 
-# ⚙ Sistemas de Informação
+# ⚙ Infraestrutura de Software
 <p align="center">
   <img
     src="https://img.shields.io/github/repo-size/Nerebo/3Periodo?style=flat"
